@@ -1,21 +1,31 @@
-# Failure semantics
+# Durable acceptance: decisions and failure semantics
 
-## Decision: atomic in-process idempotency
+## One transaction per acceptance
 
-The key lookup, capacity check, insertion into both maps, and counter updates share one monitor. HTTP response writing happens after the monitor is released. If a client loses a response after acceptance, retrying the same key and payload retrieves the same job while the process remains alive.
+The job ID, key, payload, status, and timestamp live in one PostgreSQL row. A unique index enforces one row per key. The service commits before returning 201. A response lost after commit is recoverable by retrying the same key; the request does not need to create another job.
 
-## Decision: no silent expiration
+## Why lock one configuration row?
 
-A new key receives 503 when capacity is exhausted. Existing matching keys still replay; conflicting payloads still receive 409. Restarting clears every key, so a retry after restart may produce a new ID. This limitation is explicit rather than claiming exactly-once delivery.
+A unique index protects key uniqueness, but it does not make `count jobs → check capacity → insert` atomic for different keys. Every service instance locks the same configuration row before looking up a key and counting jobs. This serializes writers and gives the capacity check a fresh READ COMMITTED view after the preceding transaction commits.
 
-## Decision: text payloads
+The transaction lock is released on commit, rollback, or connection termination. It replaces the old JVM monitor for PostgreSQL operations; Java synchronization alone would not coordinate two processes. Direct database writers that bypass this protocol can violate the capacity rule, so application access must be controlled in any deployment.
 
-The learning goal is concurrency and HTTP semantics. Text avoids introducing an external JSON parser; response JSON only contains server-generated IDs and fixed strings. A production API would define a versioned schema and validation rules.
+This is intentionally conservative. A higher-throughput design could atomically reserve capacity and use per-key conflict handling. That adds complexity and needs its own contention and failure tests.
+
+## PostgreSQL constraints and input
+
+UUID is the primary key; the ASCII request key has a unique constraint and C collation; payload bytes are bounded. The HTTP layer additionally rejects blank text and NUL. Prepared statements keep text separate from SQL. Exact payload equality preserves the initial API semantics.
+
+Database exceptions become a fixed 503 response rather than leaking driver messages, JDBC URLs, or payloads. A lost connection during commit has an ambiguous outcome; the application does not assume rollback succeeded or retry with a new key.
+
+## What survives a restart?
+
+Committed jobs and configured capacity survive a Java restart and normal PostgreSQL restarts when its data volume is retained. Per-process counters do not. The explicitly selected memory backend remains non-durable. Losing the database volume, restoring an older backup, or modifying stored keys changes the guarantee.
+
+## Migration boundary
+
+`migrate.sh` applies the initial schema explicitly and transactionally, with an advisory lock to serialize bootstrap. `CREATE TABLE IF NOT EXISTS` and an insert-on-conflict for configuration make this specific initial bootstrap repeatable. It does not validate arbitrary existing schemas or track future migration versions. Do not edit an already deployed migration to change its schema; introduce a tracked migration mechanism for later evolution.
 
 ## Verification boundaries
 
-The concurrent test proves the tested single-process implementation accepts one job for 24 simultaneous identical submissions. It does not prove durability, linearizability across instances, load tolerance, or security under hostile traffic. Those require a different storage and deployment design.
-
-## Potential next milestone
-
-Use a transactional database with a unique constraint on (tenant, idempotency key), store a request hash and response record, define expiry, and test crash/retry boundaries. Add a worker and durable job transitions only when job execution becomes part of the scope.
+Tests use real PostgreSQL, real HTTP requests, independent store instances, and separately launched JVMs. They exercise key/capacity contention, SQL constraints, rollback and restarts. They do not establish high-load performance, authentication security, backup recovery, or exactly-once job execution. There is still no job executor.
