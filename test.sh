@@ -5,6 +5,7 @@ cd "$(dirname "$0")"
 java -cp 'build/classes:build/deps/*' dev.asritha.intake.JobIntakeServerTest
 if [ "${1:-}" = "--postgres" ]; then
   java -cp 'build/classes:build/deps/*' dev.asritha.intake.PostgresIntegrationTest
+  java -cp 'build/classes:build/deps/*' dev.asritha.intake.WorkerIntegrationTest
 elif [ "$#" -ne 0 ]; then
   echo 'Usage: ./test.sh [--postgres]' >&2
   exit 1

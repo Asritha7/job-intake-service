@@ -20,11 +20,11 @@ public final class PostgresJobStore implements JobStore {
                     capacity = result.getInt(1);
                 }
                 // This statement sees a fresh READ COMMITTED snapshot after obtaining the lock.
-                try (var statement = connection.prepareStatement("SELECT id, payload FROM jobs WHERE idempotency_key = ?")) {
+                try (var statement = connection.prepareStatement("SELECT id, payload, status, attempts, result_sha256, last_error FROM jobs WHERE idempotency_key = ?")) {
                     statement.setString(1, key);
                     try (var result = statement.executeQuery()) {
                         if (result.next()) {
-                            Job existing = new Job(result.getString(1), result.getString(2));
+                            Job existing = new Job(result.getString(1), result.getString(2), result.getString(3), result.getInt(4), result.getString(5), result.getString(6));
                             connection.commit();
                             return existing.payload().equals(payload)
                                 ? new Submission(200, existing) : new Submission(409, null);
@@ -58,16 +58,16 @@ public final class PostgresJobStore implements JobStore {
         final UUID uuid;
         try { uuid = UUID.fromString(id); } catch (IllegalArgumentException invalid) { return null; }
         try (var connection = database.connect();
-             var statement = connection.prepareStatement("SELECT id, payload FROM jobs WHERE id = ?")) {
+             var statement = connection.prepareStatement("SELECT id, payload, status, attempts, result_sha256, last_error FROM jobs WHERE id = ?")) {
             statement.setObject(1, uuid);
             try (var result = statement.executeQuery()) {
-                return result.next() ? new Job(result.getString(1), result.getString(2)) : null;
+                return result.next() ? new Job(result.getString(1), result.getString(2), result.getString(3), result.getInt(4), result.getString(5), result.getString(6)) : null;
             }
         }
     }
     @Override public boolean ready() throws SQLException {
         try (var connection = database.connect();
-             var statement = connection.prepareStatement("SELECT capacity, (SELECT count(*) FROM jobs WHERE FALSE) FROM intake_config WHERE singleton = TRUE");
+             var statement = connection.prepareStatement("SELECT capacity, (SELECT count(attempts) FROM jobs WHERE FALSE) FROM intake_config WHERE singleton = TRUE");
              var result = statement.executeQuery()) {
             return result.next();
         }
