@@ -1,6 +1,11 @@
 #!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-mkdir -p build/classes
-javac --release 21 -d build/classes src/main/java/dev/asritha/intake/*.java src/test/java/dev/asritha/intake/*.java
-java -cp build/classes dev.asritha.intake.JobIntakeServerTest
+./scripts/compile.sh
+java -cp 'build/classes:build/deps/*' dev.asritha.intake.JobIntakeServerTest
+if [ "${1:-}" = "--postgres" ]; then
+  java -cp 'build/classes:build/deps/*' dev.asritha.intake.PostgresIntegrationTest
+elif [ "$#" -ne 0 ]; then
+  echo 'Usage: ./test.sh [--postgres]' >&2
+  exit 1
+fi
