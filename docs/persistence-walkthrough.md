@@ -19,7 +19,7 @@ Trace the code in this order:
 
 **What if the database connection fails during commit?** The client cannot infer whether the job was accepted from a 503 alone. Retrying the same key resolves that uncertainty once storage is reachable.
 
-**Does this execute a job exactly once?** No. It records acceptance. Execution and external side effects require separate worker and recovery decisions.
+**Does this execute a job exactly once?** No. The separate worker can recompute its deterministic hash after a crash. See the worker walkthrough for lease and recovery semantics.
 
 **Does readiness mean new work will be accepted?** No. The store may be readable but full. `/ready` checks storage access; POST enforces capacity.
 

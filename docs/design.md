@@ -24,8 +24,14 @@ Committed jobs and configured capacity survive a Java restart and normal Postgre
 
 ## Migration boundary
 
-`migrate.sh` applies the initial schema explicitly and transactionally, with an advisory lock to serialize bootstrap. `CREATE TABLE IF NOT EXISTS` and an insert-on-conflict for configuration make this specific initial bootstrap repeatable. It does not validate arbitrary existing schemas or track future migration versions. Do not edit an already deployed migration to change its schema; introduce a tracked migration mechanism for later evolution.
+`migrate.sh` applies schema migrations explicitly and transactionally, with an advisory lock to serialize migration runners. `CREATE TABLE IF NOT EXISTS` and an insert-on-conflict for configuration make this specific initial bootstrap repeatable. The worker milestone adds a `schema_migrations` ledger with checksums and migration 002. The runner adopts an existing migration-001 schema, applies outstanding SQL in order, and rejects drift in recorded files. It does not validate arbitrary hand-edited schemas. Never edit an already recorded migration to change the schema; add a new one.
 
 ## Verification boundaries
 
-Tests use real PostgreSQL, real HTTP requests, independent store instances, and separately launched JVMs. They exercise key/capacity contention, SQL constraints, rollback and restarts. They do not establish high-load performance, authentication security, backup recovery, or exactly-once job execution. There is still no job executor.
+Tests use real PostgreSQL, real HTTP requests, independent store instances, and separately launched JVMs. They exercise key/capacity contention, SQL constraints, rollback and restarts. They do not establish high-load performance, authentication security, backup recovery, or exactly-once job execution. The worker executes only a deterministic hash task; external side-effect guarantees are outside this design.
+
+## Leased execution
+
+Workers take row locks using `FOR UPDATE SKIP LOCKED`, commit a lease, and release the transaction before computing. See the [PostgreSQL locking reference](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE). A token and unexpired lease are required to persist completion. Expiry allows retries but does not stop an old process from running; fencing protects database state only.
+
+Execution claims consume a bounded attempt budget. Explicit failure schedules exponential backoff; crashed workers are recovered after lease expiry. Final-attempt expiry becomes terminal failure when a worker next polls. Terminal jobs are retained for key deduplication and still count toward capacity.
