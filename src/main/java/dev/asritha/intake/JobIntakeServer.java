@@ -8,28 +8,26 @@ import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.UUID;
+import java.sql.SQLException;
+import java.util.concurrent.atomic.AtomicLong;
+import dev.asritha.intake.JobStore.Job;
+import dev.asritha.intake.JobStore.Submission;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
-/** Bounded, single-process job intake demonstrating atomic idempotency. */
+/** HTTP job acceptance with a pluggable durable store. */
 public final class JobIntakeServer implements AutoCloseable {
-    private record Job(String id, String payload) {
-        String json() { return "{\"id\":\"" + id + "\",\"status\":\"accepted\"}"; }
-    }
-    private record Submission(int status, Job job) {}
     private final HttpServer server;
     private final ExecutorService executor = Executors.newFixedThreadPool(8);
-    private final Map<String, Job> byKey = new HashMap<>();
-    private final Map<String, Job> byId = new HashMap<>();
-    private final int capacity;
-    private long created, replayed, conflicts, full;
+    private final JobStore store;
+    private final AtomicLong created = new AtomicLong(), replayed = new AtomicLong();
+    private final AtomicLong conflicts = new AtomicLong(), full = new AtomicLong();
 
     public JobIntakeServer(int port, int capacity) throws IOException {
-        if (capacity < 1) throw new IllegalArgumentException("Capacity must be positive");
-        this.capacity = capacity;
+        this(port, new InMemoryJobStore(capacity));
+    }
+    public JobIntakeServer(int port, JobStore store) throws IOException {
+        this.store = java.util.Objects.requireNonNull(store);
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 64);
         server.createContext("/", this::handle);
         server.setExecutor(executor);
@@ -37,22 +35,7 @@ public final class JobIntakeServer implements AutoCloseable {
     public void start() { server.start(); }
     public int port() { return server.getAddress().getPort(); }
 
-    private synchronized Submission submit(String key, String payload) {
-        Job existing = byKey.get(key);
-        if (existing != null) {
-            if (!existing.payload().equals(payload)) { conflicts++; return new Submission(409, null); }
-            replayed++;
-            return new Submission(200, existing);
-        }
-        if (byId.size() >= capacity) { full++; return new Submission(503, null); }
-        Job job = new Job(UUID.randomUUID().toString(), payload);
-        byKey.put(key, job);
-        byId.put(job.id(), job);
-        created++;
-        return new Submission(201, job);
-    }
-    private synchronized Job find(String id) { return byId.get(id); }
-    private synchronized String metrics() {
+    private String metrics() {
         return "jobs_created_total " + created + "\n"
             + "jobs_replayed_total " + replayed + "\n"
             + "jobs_conflicts_total " + conflicts + "\n"
@@ -62,7 +45,12 @@ public final class JobIntakeServer implements AutoCloseable {
         try (exchange) {
             String path = exchange.getRequestURI().getPath();
             String method = exchange.getRequestMethod();
-            if (path.equals("/health")) {
+            try {
+            if (path.equals("/ready")) {
+                if (!method.equals("GET")) { methodNotAllowed(exchange, "GET"); return; }
+                if (store.ready()) respond(exchange, 200, "application/json", "{\"status\":\"ready\"}");
+                else error(exchange, 503, "storage_unavailable");
+            } else if (path.equals("/health")) {
                 if (!method.equals("GET")) { methodNotAllowed(exchange, "GET"); return; }
                 respond(exchange, 200, "application/json", "{\"status\":\"ok\"}");
             } else if (path.equals("/metrics")) {
@@ -73,13 +61,17 @@ public final class JobIntakeServer implements AutoCloseable {
                 accept(exchange);
             } else if (path.matches("/jobs/[a-f0-9-]{36}")) {
                 if (!method.equals("GET")) { methodNotAllowed(exchange, "GET"); return; }
-                Job job = find(path.substring(6));
+                Job job = store.find(path.substring(6));
                 if (job == null) error(exchange, 404, "job_not_found");
                 else respond(exchange, 200, "application/json", job.json());
             } else error(exchange, 404, "route_not_found");
+            } catch (SQLException unavailable) {
+                // Do not disclose JDBC URLs, credentials, payloads or driver error text.
+                error(exchange, 503, "storage_unavailable");
+            }
         }
     }
-    private void accept(HttpExchange exchange) throws IOException {
+    private void accept(HttpExchange exchange) throws IOException, SQLException {
         String key = exchange.getRequestHeaders().getFirst("Idempotency-Key");
         if (key == null || !key.matches("[A-Za-z0-9._-]{1,80}")) {
             error(exchange, 400, "invalid_idempotency_key"); return;
@@ -95,8 +87,16 @@ public final class JobIntakeServer implements AutoCloseable {
             payload = StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                 .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(body)).toString();
         } catch (CharacterCodingException invalid) { error(exchange, 400, "invalid_utf8"); return; }
+        if (payload.indexOf(0) >= 0) { error(exchange, 400, "invalid_text"); return; }
         if (payload.isBlank()) { error(exchange, 400, "empty_payload"); return; }
-        Submission result = submit(key, payload);
+        Submission result = store.submit(key, payload);
+        switch (result.status()) {
+            case 201 -> created.incrementAndGet();
+            case 200 -> replayed.incrementAndGet();
+            case 409 -> conflicts.incrementAndGet();
+            case 503 -> full.incrementAndGet();
+            default -> throw new IllegalStateException("Unexpected store status");
+        }
         if (result.status() == 409) { error(exchange, 409, "idempotency_conflict"); return; }
         if (result.status() == 503) { error(exchange, 503, "capacity_exhausted"); return; }
         exchange.getResponseHeaders().set("Location", "/jobs/" + result.job().id());
@@ -122,7 +122,9 @@ public final class JobIntakeServer implements AutoCloseable {
     }
     public static void main(String[] args) throws IOException {
         int port = args.length == 0 ? 8080 : Integer.parseInt(args[0]);
-        JobIntakeServer application = new JobIntakeServer(port, 1000);
+        JobStore store = "memory".equals(System.getenv("JOB_STORE"))
+            ? new InMemoryJobStore(1000) : new PostgresJobStore(DatabaseConfig.fromEnvironment());
+        JobIntakeServer application = new JobIntakeServer(port, store);
         Runtime.getRuntime().addShutdownHook(new Thread(application::close));
         application.start();
         System.out.println("Job intake listening on http://127.0.0.1:" + application.port());
