@@ -35,3 +35,7 @@ Tests use real PostgreSQL, real HTTP requests, independent store instances, and 
 Workers take row locks using `FOR UPDATE SKIP LOCKED`, commit a lease, and release the transaction before computing. See the [PostgreSQL locking reference](https://www.postgresql.org/docs/current/sql-select.html#SQL-FOR-UPDATE-SHARE). A token and unexpired lease are required to persist completion. Expiry allows retries but does not stop an old process from running; fencing protects database state only.
 
 Execution claims consume a bounded attempt budget. Explicit failure schedules exponential backoff; crashed workers are recovered after lease expiry. Final-attempt expiry becomes terminal failure when a worker next polls. Terminal jobs are retained for key deduplication and still count toward capacity.
+
+## HTTP operational boundary
+
+The API now bounds its executor queue, thread count, and built-in JDK transport resources. Metrics distinguish executor saturation, handler IO failures, storage errors, and response classes. The five-second stop grace period allows active exchanges to finish but is not a guarantee of cancellation or exactly-once acceptance. See [operations](operations.md) for the metric definitions, timer caveats, and real-socket tests.

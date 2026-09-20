@@ -67,7 +67,7 @@ The worker uses a 30-second lease, a fresh ownership token per attempt, and up t
 | `GET /ready` | `200` when the store tables/configuration are readable; otherwise `503` |
 | `POST /jobs` | `201` new acceptance; `200` replay; `409` conflicting reuse |
 | `GET /jobs/<id>` | `200` current job state/result; `404` unknown ID |
-| `GET /metrics` | Process-local counters for creation, replay, conflict, and capacity rejection |
+| `GET /metrics` | Process-local HTTP, executor, storage-error, and acceptance metrics |
 
 The key must contain 1–80 ASCII letters, digits, dots, underscores, or hyphens. Bodies must be nonblank UTF-8 text, at most 8,192 bytes, without NUL characters, with `Content-Type: text/plain`. Payload comparison is exact, including whitespace. Invalid input returns `400`, unsupported media type `415`, oversized payload `413`, and wrong method `405`.
 
@@ -85,10 +85,18 @@ All submissions serialize on that row, including replays. This is deliberately s
 
 If a connection fails during commit, the client may receive `503` even though the commit succeeded. Retry with the **same key and payload** to resolve that ambiguity. Retention of committed jobs depends on retaining the database and its normal durability settings; application restarts alone do not erase them.
 
+## HTTP resource limits
+
+The API uses eight handler threads and at most 64 queued executor tasks. When both are occupied, excess connections are closed by the JDK before a handler can generate an HTTP response. Clients should back off and retry submissions with the same key and payload.
+
+The built-in JDK provider is configured before startup for 128 open connections, 16 idle connections, 32 headers, a 16 KiB header-section limit, a 10-second request-receive budget, and a 15-second response budget. Timeout enforcement is periodic, not an exact deadline. Unread rejected bodies are not drained. Shutdown stops accepting connections and gives current exchanges up to five seconds before closing them and interrupting executor tasks.
+
+`/health`, `/ready`, and `/metrics` share the same executor, so they can become unreachable during saturation. These controls do not replace a production edge proxy or deployment-specific load testing.
+
 ## Verification
 
 ```sh
-./test.sh             # original in-memory HTTP contract tests
+./test.sh             # HTTP contract and operational socket tests
 ./test.sh --postgres  # additionally requires DATABASE_* and a running PostgreSQL server
 ```
 
@@ -108,6 +116,6 @@ This mode loses jobs on restart and has no worker; workers always use PostgreSQL
 
 The worker is a local reference implementation, not a general execution platform. It uses a deterministic hash task, with no external side effects. Execution can repeat after a crash; the design does not promise exactly-once execution. It has no authentication, TLS, tenant isolation, key expiration, worker heartbeats, or production deployment. There is no arbitrary-task execution deadline; adding slower processors requires additional controls.
 
-`/ready` checks basic read access, not every possible write permission or available capacity. Metrics describe HTTP acceptance in the current process and reset on restart; jobs and execution attempts persist. JDBC connection/socket and statement/lock timeouts bound database waits. HTTP slow-client handling, bounded executor queues, and draining in-flight work on shutdown remain future work.
+`/ready` checks basic read access, not every possible write permission or available capacity. Metrics describe HTTP acceptance in the current process and reset on restart; jobs and execution attempts persist. JDBC connection/socket and statement/lock timeouts bound database waits. HTTP handling uses bounded threads and a bounded queue, JDK transport limits, and a five-second shutdown grace period; see the operational guide for the exact boundaries.
 
-See [design notes](docs/design.md), the [persistence exercise](docs/persistence-walkthrough.md), and the [worker exercise](docs/worker-walkthrough.md). The next operational milestone is bounded request handling and observability, rather than adding externally visible side effects.
+See [design notes](docs/design.md), the [persistence exercise](docs/persistence-walkthrough.md), and the [worker exercise](docs/worker-walkthrough.md). See the [operational guide](docs/operations.md) for limits, metric meanings, overload behavior, and shutdown. Further work could add durable worker metrics, connection pooling, and a measured load baseline.
