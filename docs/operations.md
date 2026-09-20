@@ -11,6 +11,7 @@
 | Idle duration | 15 seconds, with periodic enforcement |
 | Request headers | 32 fields and a 16 KiB section, including JDK accounting overhead |
 | Request body | 8,192 bytes |
+| Unread-body drain | 8,192-byte budget, also subject to the request timer |
 | Request receive time | 10 seconds, with periodic enforcement |
 | Response time | 15 seconds, with periodic enforcement |
 | Shutdown grace period | 5 seconds |
@@ -55,7 +56,7 @@ All these values reset when the API process restarts. Snapshots are not transact
 
 Ctrl+C invokes the shutdown hook. The listener stops accepting connections, active exchanges get up to five seconds to finish, and remaining executor tasks are interrupted. There is no promise that queued work finishes, that interruption cancels JDBC, or that arbitrary custom store implementations stop immediately. Retry ambiguous requests using their original keys after restarting.
 
-`./test.sh` checks normal API behavior plus real-socket saturation, recovery, partial headers, incomplete bodies, immediate invalid-body rejection, safe metrics, and completion of an in-flight request during shutdown. Latches hold the store deliberately so the saturation test measures actual queue bounds rather than depending on machine speed. `./test.sh --postgres` additionally runs persistence and worker recovery suites.
+`./test.sh` checks normal API behavior plus real-socket saturation, recovery, partial headers, incomplete bodies, bounded invalid-body cleanup, safe metrics, and completion of an in-flight request during shutdown. Latches hold the store deliberately so the saturation test measures actual queue bounds rather than depending on machine speed. `./test.sh --postgres` additionally runs persistence and worker recovery suites.
 
 ## Learning questions
 
@@ -66,3 +67,5 @@ Ctrl+C invokes the shutdown hook. The listener stops accepting connections, acti
 5. Why keep metric labels fixed? Client-controlled IDs and paths would create an ever-growing set of time series and could expose private input.
 
 A next milestone should measure throughput and queue delay under reproducible load before tuning limits, then consider connection pooling and durable worker-state metrics. These tests establish specific behavior, not a production capacity claim.
+
+Error responses use a small unread-body drain because immediately closing a socket containing unread bytes can cause a reset that prevents the client from receiving the response. A client that withholds body bytes can delay cleanup until the request timer fires. Transport failure can still prevent delivery; a response is never guaranteed for an invalid or oversized stream.

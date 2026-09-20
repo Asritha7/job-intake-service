@@ -89,7 +89,7 @@ If a connection fails during commit, the client may receive `503` even though th
 
 The API uses eight handler threads and at most 64 queued executor tasks. When both are occupied, excess connections are closed by the JDK before a handler can generate an HTTP response. Clients should back off and retry submissions with the same key and payload.
 
-The built-in JDK provider is configured before startup for 128 open connections, 16 idle connections, 32 headers, a 16 KiB header-section limit, a 10-second request-receive budget, and a 15-second response budget. Timeout enforcement is periodic, not an exact deadline. Unread rejected bodies are not drained. Shutdown stops accepting connections and gives current exchanges up to five seconds before closing them and interrupting executor tasks.
+The built-in JDK provider is configured before startup for 128 open connections, 16 idle connections, 32 headers, a 16 KiB header-section limit, a 10-second request-receive budget, and a 15-second response budget. Timeout enforcement is periodic, not an exact deadline. Unread rejected bodies have an 8 KiB drain budget, also subject to the request timer. Shutdown stops accepting connections and gives current exchanges up to five seconds before closing them and interrupting executor tasks.
 
 `/health`, `/ready`, and `/metrics` share the same executor, so they can become unreachable during saturation. These controls do not replace a production edge proxy or deployment-specific load testing.
 

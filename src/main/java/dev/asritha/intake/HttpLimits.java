@@ -14,8 +14,9 @@ final class HttpLimits {
         System.setProperty("sun.net.httpserver.idleInterval", "15");
         System.setProperty("sun.net.httpserver.maxReqHeaders", "32");
         System.setProperty("sun.net.httpserver.maxReqHeaderSize", "16384");
-        // Do not drain an unread body after rejecting invalid input.
-        System.setProperty("sun.net.httpserver.drainAmount", "0");
+        // A bounded drain preserves error responses on platforms that reset unread sockets.
+        // The request timer also bounds waiting for missing body bytes.
+        System.setProperty("sun.net.httpserver.drainAmount", "8192");
     }
     static void initialize() { }
     private HttpLimits() { }
