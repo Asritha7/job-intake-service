@@ -12,13 +12,24 @@ import java.sql.SQLException;
 import java.util.concurrent.atomic.AtomicLong;
 import dev.asritha.intake.JobStore.Job;
 import dev.asritha.intake.JobStore.Submission;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLongArray;
+
 
 /** HTTP job acceptance with a pluggable durable store. */
 public final class JobIntakeServer implements AutoCloseable {
     private final HttpServer server;
-    private final ExecutorService executor = Executors.newFixedThreadPool(8);
+    private final ThreadPoolExecutor executor;
+    private final int queueCapacity;
+    private final AtomicBoolean closing = new AtomicBoolean();
+    private final AtomicLong rejected = new AtomicLong(), inFlight = new AtomicLong();
+    private final AtomicLong completed = new AtomicLong(), durationNanos = new AtomicLong();
+    private final AtomicLong ioErrors = new AtomicLong(), storageErrors = new AtomicLong();
+    private final AtomicLongArray responses = new AtomicLongArray(6);
     private final JobStore store;
     private final AtomicLong created = new AtomicLong(), replayed = new AtomicLong();
     private final AtomicLong conflicts = new AtomicLong(), full = new AtomicLong();
@@ -27,7 +38,18 @@ public final class JobIntakeServer implements AutoCloseable {
         this(port, new InMemoryJobStore(capacity));
     }
     public JobIntakeServer(int port, JobStore store) throws IOException {
+        this(port, store, 8, 64);
+    }
+    // Small bounds make saturation tests deterministic without a large load generator.
+    JobIntakeServer(int port, JobStore store, int threads, int queueCapacity) throws IOException {
         this.store = java.util.Objects.requireNonNull(store);
+        HttpLimits.initialize();
+        this.queueCapacity = queueCapacity;
+        executor = new ThreadPoolExecutor(threads, threads, 0, TimeUnit.MILLISECONDS,
+            new ArrayBlockingQueue<>(queueCapacity), (task, pool) -> {
+                rejected.incrementAndGet();
+                throw new RejectedExecutionException("HTTP executor saturated or stopping");
+            });
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 64);
         server.createContext("/", this::handle);
         server.setExecutor(executor);
@@ -35,13 +57,28 @@ public final class JobIntakeServer implements AutoCloseable {
     public void start() { server.start(); }
     public int port() { return server.getAddress().getPort(); }
 
-    private String metrics() {
+    String metrics() {
         return "jobs_created_total " + created + "\n"
             + "jobs_replayed_total " + replayed + "\n"
             + "jobs_conflicts_total " + conflicts + "\n"
-            + "jobs_capacity_rejections_total " + full + "\n";
+            + "jobs_capacity_rejections_total " + full + "\n"
+            + "http_executor_active " + executor.getActiveCount() + "\n"
+            + "http_executor_queued " + executor.getQueue().size() + "\n"
+            + "http_executor_threads_limit " + executor.getMaximumPoolSize() + "\n"
+            + "http_executor_queue_limit " + queueCapacity + "\n"
+            + "http_executor_rejections_total " + rejected + "\n"
+            + "http_requests_in_flight " + inFlight + "\n"
+            + "http_handler_duration_seconds_count " + completed + "\n"
+            + "http_handler_duration_seconds_sum " + (durationNanos.get() / 1_000_000_000.0) + "\n"
+            + "http_io_errors_total " + ioErrors + "\n"
+            + "http_storage_errors_total " + storageErrors + "\n"
+            + "http_responses_total{class=\"2xx\"} " + responses.get(2) + "\n"
+            + "http_responses_total{class=\"4xx\"} " + responses.get(4) + "\n"
+            + "http_responses_total{class=\"5xx\"} " + responses.get(5) + "\n";
     }
     private void handle(HttpExchange exchange) throws IOException {
+        long started = System.nanoTime();
+        inFlight.incrementAndGet();
         try (exchange) {
             String path = exchange.getRequestURI().getPath();
             String method = exchange.getRequestMethod();
@@ -49,7 +86,7 @@ public final class JobIntakeServer implements AutoCloseable {
             if (path.equals("/ready")) {
                 if (!method.equals("GET")) { methodNotAllowed(exchange, "GET"); return; }
                 if (store.ready()) respond(exchange, 200, "application/json", "{\"status\":\"ready\"}");
-                else error(exchange, 503, "storage_unavailable");
+                else { storageErrors.incrementAndGet(); error(exchange, 503, "storage_unavailable"); }
             } else if (path.equals("/health")) {
                 if (!method.equals("GET")) { methodNotAllowed(exchange, "GET"); return; }
                 respond(exchange, 200, "application/json", "{\"status\":\"ok\"}");
@@ -66,9 +103,17 @@ public final class JobIntakeServer implements AutoCloseable {
                 else respond(exchange, 200, "application/json", job.json());
             } else error(exchange, 404, "route_not_found");
             } catch (SQLException unavailable) {
+                storageErrors.incrementAndGet();
                 // Do not disclose JDBC URLs, credentials, payloads or driver error text.
                 error(exchange, 503, "storage_unavailable");
             }
+        } catch (IOException failure) {
+            ioErrors.incrementAndGet();
+            throw failure;
+        } finally {
+            durationNanos.addAndGet(System.nanoTime() - started);
+            completed.incrementAndGet();
+            inFlight.decrementAndGet();
         }
     }
     private void accept(HttpExchange exchange) throws IOException, SQLException {
@@ -102,22 +147,24 @@ public final class JobIntakeServer implements AutoCloseable {
         exchange.getResponseHeaders().set("Location", "/jobs/" + result.job().id());
         respond(exchange, result.status(), "application/json", result.job().json());
     }
-    private static void methodNotAllowed(HttpExchange exchange, String method) throws IOException {
+    private void methodNotAllowed(HttpExchange exchange, String method) throws IOException {
         exchange.getResponseHeaders().set("Allow", method);
         error(exchange, 405, "method_not_allowed");
     }
-    private static void error(HttpExchange exchange, int status, String error) throws IOException {
+    private void error(HttpExchange exchange, int status, String error) throws IOException {
         respond(exchange, status, "application/json", "{\"error\":\"" + error + "\"}");
     }
-    private static void respond(HttpExchange exchange, int status, String type, String body) throws IOException {
+    private void respond(HttpExchange exchange, int status, String type, String body) throws IOException {
         byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
         exchange.getResponseHeaders().set("Content-Type", type);
         exchange.getResponseHeaders().set("Cache-Control", "no-store");
         exchange.sendResponseHeaders(status, bytes.length);
+        responses.incrementAndGet(status / 100);
         exchange.getResponseBody().write(bytes);
     }
     @Override public void close() {
-        server.stop(0);
+        if (!closing.compareAndSet(false, true)) return;
+        server.stop(5);
         executor.shutdownNow();
     }
     public static void main(String[] args) throws IOException {
