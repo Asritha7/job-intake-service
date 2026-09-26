@@ -119,3 +119,7 @@ The worker is a local reference implementation, not a general execution platform
 `/ready` checks basic read access, not every possible write permission or available capacity. Metrics describe HTTP acceptance in the current process and reset on restart; jobs and execution attempts persist. JDBC connection/socket and statement/lock timeouts bound database waits. HTTP handling uses bounded threads and a bounded queue, JDK transport limits, and a five-second shutdown grace period; see the operational guide for the exact boundaries.
 
 See [design notes](docs/design.md), the [persistence exercise](docs/persistence-walkthrough.md), and the [worker exercise](docs/worker-walkthrough.md). See the [operational guide](docs/operations.md) for limits, metric meanings, overload behavior, and shutdown. Further work could add durable worker metrics, connection pooling, and a measured load baseline.
+
+## Development agent
+
+A manually selected [reliability test agent](.github/agents/job-intake-reliability.agent.md) can prepare focused regression-test PRs. See the [pilot task](docs/reliability-agent-pilot.md) and [broader workflow proposals](docs/agent-workflows.md). Hosted execution requires Copilot cloud agent access; the profile itself does not run jobs or merge changes.
