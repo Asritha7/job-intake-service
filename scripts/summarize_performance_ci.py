@@ -23,7 +23,9 @@ def summarize(folder):
                     or wait.get("sample_rounds", 0) < 1):
                 raise ValueError(f"Invalid wait sampler report for {file.name}")
             counts = wait["observations"]
-            if not isinstance(counts, dict) or any(type(value) is not int or value < 0 for value in counts.values()):
+            if (not isinstance(counts, dict)
+                    or any(type(value) is not int or value < 0 for value in counts.values())
+                    or sum(counts.values()) != wait.get("backend_observations")):
                 raise ValueError(f"Invalid sampled backend categories in {file.name}")
             created, replay = report["new"], report["replay"]
             if (created["requests"] != 30 or replay["requests"] != 15
@@ -55,6 +57,7 @@ def summarize(folder):
             "median_trial_p95_ms": statistics.median(t["accept_p95_ms"] for t in trials),
             "total_capacity_lock_wait_observations": sum(t["capacity_lock_wait_observations"] for t in trials),
             "total_sample_rounds": sum(t["wait_samples"] for t in trials),
+            "total_backend_observations": sum(t["backend_observations"] for t in trials),
         }
     return {
         "schema_version": 1,
@@ -83,14 +86,14 @@ def to_markdown(summary):
         "",
         "Three repetitions per client-concurrency setting on a disposable GitHub Actions PostgreSQL service.",
         "",
-        "| Client concurrency | Median create requests/s | Observed range | Median trial create p95 (ms) | Capacity-lock wait observations |",
-        "| ---: | ---: | ---: | ---: | ---: |",
+        "| Clients | Median creates/s | Median trial p95 (ms) | Capacity-lock wait observations / backend observations |",
+        "| ---: | ---: | ---: | ---: |",
     ]
     for count in ("1", "4", "8"):
         data = summary["results"][count]
         lines.append(f"| {count} | {data['median_accepts_per_second']:.2f} "
-                     f"| {data['range_accepts_per_second'][0]:.2f}–{data['range_accepts_per_second'][1]:.2f} "
-                     f"| {data['median_trial_p95_ms']:.2f} | {data['total_capacity_lock_wait_observations']} |")
+                     f"| {data['median_trial_p95_ms']:.2f} "
+                     f"| {data['total_capacity_lock_wait_observations']} / {data['total_backend_observations']} |")
     lines.extend(["", "**Interpretation:** CI-local, small-sample measurements only. "
                   "No production throughput, worker capacity or database-lock bottleneck is established. Wait samples are observations, not duration estimates.",
                   "See the JSON artifact for all trials and methodology.", ""])
