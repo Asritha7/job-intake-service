@@ -75,6 +75,7 @@ public final class PoolComparisonProbe {
 
             String prefix = "pool-" + UUID.randomUUID().toString().replace("-", "").substring(0, 12);
             ArrayList<String> keys = new ArrayList<>();
+            String[] createdIds = new String[jobs];
             for (int index = 0; index < jobs; index++) keys.add(prefix + "-" + index);
 
             List<Long> createLatencies = Collections.synchronizedList(new ArrayList<>());
@@ -87,6 +88,7 @@ public final class PoolComparisonProbe {
                     createLatencies.add(System.nanoTime() - start);
                     if (result.status() != 201 || result.job() == null)
                         throw new IllegalStateException("Create was not 201");
+                    createdIds[jobIndex] = result.job().id();
                     return null;
                 });
             }
@@ -104,8 +106,9 @@ public final class PoolComparisonProbe {
                     long itemStart = System.nanoTime();
                     var result = store.submit(keys.get(jobIndex), "pool-compare-payload-" + jobIndex);
                     replayLatencies.add(System.nanoTime() - itemStart);
-                    if (result.status() != 200 || result.job() == null)
-                        throw new IllegalStateException("Replay was not 200");
+                    if (result.status() != 200 || result.job() == null
+                            || !result.job().id().equals(createdIds[jobIndex]))
+                        throw new IllegalStateException("Replay did not preserve original job ID");
                     return null;
                 });
             }
@@ -118,8 +121,10 @@ public final class PoolComparisonProbe {
             if (store.submit(keys.get(0), "conflicting-body").status() != 409)
                 throw new IllegalStateException("Idempotency conflict contract broken");
             // Inspect transaction state after a 409, including pooled reuse.
-            if (store.submit(keys.get(0), "pool-compare-payload-0").status() != 200)
-                throw new IllegalStateException("Connection not reusable after conflict");
+            var replayAfterConflict = store.submit(keys.get(0), "pool-compare-payload-0");
+            if (replayAfterConflict.status() != 200
+                    || !replayAfterConflict.job().id().equals(createdIds[0]))
+                throw new IllegalStateException("Conflict changed existing job identity");
             boolean sqlRejected = false;
             try {
                 store.submit(prefix + "-invalid key", "invalid SQL constraint input");
@@ -130,6 +135,17 @@ public final class PoolComparisonProbe {
             // Both strategies must roll back the failed transaction and remain usable.
             if (store.submit(prefix + "-after-failure", "recovered").status() != 201)
                 throw new IllegalStateException("Connection not reusable after failed SQL transaction");
+            // Verify actual stored row count, independently of HTTP/status responses.
+            try (Connection verification = database.connect();
+                 var query = verification.prepareStatement(
+                         "SELECT count(*) FROM jobs WHERE idempotency_key LIKE ?")) {
+                query.setString(1, prefix + "-%");
+                try (var rows = query.executeQuery()) {
+                    rows.next();
+                    if (rows.getLong(1) != jobs + 1)
+                        throw new IllegalStateException("Unexpected persisted job count");
+                }
+            }
             if (source != null) {
                 try (Connection connection = source.getConnection()) {
                     if (!connection.getAutoCommit()
@@ -142,7 +158,8 @@ public final class PoolComparisonProbe {
                     + "\"mode\":\"" + mode + "\",\"pool_size\":" + poolSize
                     + ",\"clients\":" + clients + ",\"create\":" + create
                     + ",\"replay\":" + replay + ",\"conflict_check\":true,"
-                    + "\"transaction_state_check\":true,\"sql_rollback_check\":true}\n";
+                    + "\"transaction_state_check\":true,\"sql_rollback_check\":true,"
+                    + "\"id_stability_check\":true,\"persisted_count_check\":true}\n";
         }
     }
 
