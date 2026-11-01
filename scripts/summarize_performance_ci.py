@@ -16,6 +16,15 @@ def summarize(folder):
             report = json.loads(file.read_text(encoding="utf-8"))
             if report["limits"]["concurrency"] != clients or report["limits"]["new_jobs"] != 30:
                 raise ValueError(f"Wrong workload in {file.name}")
+            wait = json.loads((folder / f"round-{round_number}-clients-{clients}.wait.json").read_text(encoding="utf-8"))
+            if (wait.get("source") != "pg_stat_activity_sampling"
+                    or wait.get("benchmark_exit_code") != 0
+                    or wait.get("sampler_errors") != 0
+                    or wait.get("sample_rounds", 0) < 1):
+                raise ValueError(f"Invalid wait sampler report for {file.name}")
+            counts = wait["observations"]
+            if not isinstance(counts, dict) or any(type(value) is not int or value < 0 for value in counts.values()):
+                raise ValueError(f"Invalid sampled backend categories in {file.name}")
             created, replay = report["new"], report["replay"]
             if (created["requests"] != 30 or replay["requests"] != 15
                     or created["unexpected_results"] or replay["unexpected_results"]
@@ -30,6 +39,13 @@ def summarize(folder):
                 "accept_p99_ms": created["latency_ms"]["p99"],
                 "replays_per_second": replay["requests_per_second"],
                 "replay_p95_ms": replay["latency_ms"]["p95"],
+                "wait_samples": wait["sample_rounds"],
+                "backend_observations": wait["backend_observations"],
+                "capacity_lock_wait_observations": counts.get("capacity_lock_wait", 0),
+                "other_lock_wait_observations": counts.get("other_lock_wait", 0),
+                "other_wait_observations": sum(value for key, value in counts.items()
+                                               if key not in ("capacity_lock_wait", "other_lock_wait", "not_waiting")),
+                "not_waiting_observations": counts.get("not_waiting", 0),
             })
         result[str(clients)] = {
             "trials": trials,
@@ -37,6 +53,8 @@ def summarize(folder):
             "range_accepts_per_second": [min(t["accepts_per_second"] for t in trials),
                                           max(t["accepts_per_second"] for t in trials)],
             "median_trial_p95_ms": statistics.median(t["accept_p95_ms"] for t in trials),
+            "total_capacity_lock_wait_observations": sum(t["capacity_lock_wait_observations"] for t in trials),
+            "total_sample_rounds": sum(t["wait_samples"] for t in trials),
         }
     return {
         "schema_version": 1,
@@ -50,7 +68,9 @@ def summarize(folder):
         "limitations": [
             "CI is a noisy shared environment: rates and latencies are observations, not service capacity or SLAs.",
             "Runs use one database with accumulating job history; rotate arm order but do not treat arms as isolated databases.",
-            "The client measures HTTP round trips, not server CPU, database lock waits, or worker throughput.",
+            "The client measures HTTP round trips. Backend wait-event snapshots are sampled, not lock wait durations.",
+            "Sampling may miss short waits and adds measurement overhead; observed waits do not establish causal bottlenecks.",
+            "No server CPU or worker throughput is measured.",
             "p95 values summarize individual trials; they are not a pooled latency percentile.",
             "No admission algorithm was changed and no speedup is claimed.",
         ],
@@ -63,16 +83,16 @@ def to_markdown(summary):
         "",
         "Three repetitions per client-concurrency setting on a disposable GitHub Actions PostgreSQL service.",
         "",
-        "| Client concurrency | Median create requests/s | Observed range | Median per-trial create p95 (ms) |",
-        "| ---: | ---: | ---: | ---: |",
+        "| Client concurrency | Median create requests/s | Observed range | Median trial create p95 (ms) | Capacity-lock wait observations |",
+        "| ---: | ---: | ---: | ---: | ---: |",
     ]
     for count in ("1", "4", "8"):
         data = summary["results"][count]
         lines.append(f"| {count} | {data['median_accepts_per_second']:.2f} "
                      f"| {data['range_accepts_per_second'][0]:.2f}–{data['range_accepts_per_second'][1]:.2f} "
-                     f"| {data['median_trial_p95_ms']:.2f} |")
+                     f"| {data['median_trial_p95_ms']:.2f} | {data['total_capacity_lock_wait_observations']} |")
     lines.extend(["", "**Interpretation:** CI-local, small-sample measurements only. "
-                  "No production throughput, worker capacity or database-lock bottleneck is established.",
+                  "No production throughput, worker capacity or database-lock bottleneck is established. Wait samples are observations, not duration estimates.",
                   "See the JSON artifact for all trials and methodology.", ""])
     return "\n".join(lines)
 
