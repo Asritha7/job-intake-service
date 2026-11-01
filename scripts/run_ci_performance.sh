@@ -61,4 +61,14 @@ for round in 1 2 3; do
   done
 done
 
+# Separate direct-store measurements of the real submission path, not HTTP timings.
+# Another 270 accepted jobs; total benchmark database stays under 1,000.
+for round in 1 2 3; do
+  for clients in 1 4 8; do
+    java -cp 'build/classes:build/deps/*' dev.asritha.intake.AdmissionPhaseProbe \
+      "$clients" 30 ".local/performance-ci/phase-round-${round}-clients-${clients}.json"
+  done
+done
+
 python3 scripts/summarize_performance_ci.py .local/performance-ci
+python3 scripts/summarize_admission_phases.py .local/performance-ci

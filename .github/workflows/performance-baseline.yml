@@ -4,6 +4,11 @@ on:
   pull_request:
     paths:
       - 'scripts/performance_baseline.py'
+      - 'src/main/java/dev/asritha/intake/PostgresJobStore.java'
+      - 'src/test/java/dev/asritha/intake/AdmissionPhaseProbe.java'
+      - 'src/test/java/dev/asritha/intake/AdmissionPhaseProbeTest.java'
+      - 'scripts/summarize_admission_phases.py'
+      - 'scripts/test_summarize_admission_phases.py'
       - 'src/test/java/dev/asritha/intake/PgWaitSampler.java'
       - 'scripts/run_ci_performance.sh'
       - 'scripts/summarize_performance_ci.py'
@@ -45,7 +50,7 @@ jobs:
           distribution: temurin
           java-version: '21'
       - name: Validate baseline summarizer
-        run: python3 -m unittest scripts.test_summarize_performance_ci -v
+        run: python3 -m unittest scripts.test_summarize_performance_ci scripts.test_summarize_admission_phases -v
       - name: Measure real API against disposable PostgreSQL
         run: bash scripts/run_ci_performance.sh
       - name: Save raw measurements
@@ -56,5 +61,6 @@ jobs:
           path: |
             .local/performance-ci/*.json
             .local/performance-ci/summary.md
+            .local/performance-ci/phase-summary.md
           if-no-files-found: warn
           retention-days: 14

@@ -120,6 +120,8 @@ The separate [isolated PostgreSQL CI performance experiment](docs/performance-ci
 
 The [PostgreSQL wait-event diagnostic](docs/postgres-wait-diagnostics.md) observes lock waits during disposable CI trials without changing application transactions. Its sampled counts are not lock durations or proof of a bottleneck.
 
+The [isolated admission phase-timing experiment](docs/admission-phase-timing.md) measures JDBC connection, configuration-row lock statement, idempotency lookup, capacity counting, insertion and commit inside the real PostgreSQL store. It uses an optional test-only observer (disabled in the normal service) and a separately bounded CI probe. Phase timings are not exact server-side lock waits or an additive breakdown of HTTP latency.
+
 ## Scope and next milestone
 
 The worker is a local reference implementation, not a general execution platform. It uses a deterministic hash task, with no external side effects. Execution can repeat after a crash; the design does not promise exactly-once execution. It has no authentication, TLS, tenant isolation, key expiration, worker heartbeats, or production deployment. There is no arbitrary-task execution deadline; adding slower processors requires additional controls.
