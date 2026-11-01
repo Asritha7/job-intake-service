@@ -124,6 +124,8 @@ The [isolated admission phase-timing experiment](docs/admission-phase-timing.md)
 
 The [isolated JDBC connection comparison](docs/connection-pool-comparison.md) contrasts fresh connections against bounded HikariCP pools in a disposable PostgreSQL CI workflow. All Hikari dependencies live outside normal compilation, and no production pool is enabled. The experiment checks transaction recovery and reports provisional timings rather than a production speedup.
 
+The [isolated pool resilience experiment](docs/pool-resilience.md) checks bounded acquisition failure, recovery after a PostgreSQL backend is terminated, and shared idempotency/capacity guarantees across **two independent Java processes with separate Hikari pools**. It runs only on a disposable GitHub Actions database; production still uses fresh JDBC connections.
+
 ## Scope and next milestone
 
 The worker is a local reference implementation, not a general execution platform. It uses a deterministic hash task, with no external side effects. Execution can repeat after a crash; the design does not promise exactly-once execution. It has no authentication, TLS, tenant isolation, key expiration, worker heartbeats, or production deployment. There is no arbitrary-task execution deadline; adding slower processors requires additional controls.

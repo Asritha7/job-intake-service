@@ -1,0 +1,60 @@
+name: Isolated pool failure and multi-JVM invariants
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/asritha/intake/PostgresJobStore.java'
+      - 'src/perf/java/dev/asritha/intake/PoolReliabilityProbe.java'
+      - 'src/perf/java/dev/asritha/intake/PoolComparisonProbe.java'
+      - 'scripts/run_pool_reliability_ci.sh'
+      - 'scripts/run_pool_comparison_ci.sh'
+      - 'scripts/validate_pool_reliability.py'
+      - 'scripts/test_validate_pool_reliability.py'
+      - '.github/workflows/pool-reliability.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resilience:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:17.11
+        env:
+          POSTGRES_DB: jobs
+          POSTGRES_USER: jobs
+          POSTGRES_PASSWORD: isolated_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jobs -d jobs"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      DATABASE_URL: jdbc:postgresql://127.0.0.1:5432/jobs
+      DATABASE_USER: jobs
+      DATABASE_PASSWORD: isolated_ci_password
+      DATABASE_SCHEMA: public
+      RUN_INTAKE_PERF_CI: isolated-postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Verify strict report validation offline
+        run: python3 -m unittest scripts.test_validate_pool_reliability -v
+      - name: Verify failure recovery and cross-JVM invariants
+        run: bash scripts/run_pool_reliability_ci.sh
+      - name: Preserve non-sensitive result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-pool-reliability
+          path: .local/pool-reliability/report.json
+          if-no-files-found: warn
+          retention-days: 14

@@ -38,6 +38,15 @@ javac --release 21 -cp 'build/classes:build/deps/*:build/perf-deps/*' -d build/c
 java -cp 'build/classes:build/deps/*:build/perf-deps/*' \
   dev.asritha.intake.PoolComparisonProbeTest
 
+# Reuse only the dependency bootstrap/compilation for isolated resilience checks.
+if [[ "${1:-}" == "--dependencies-only" && "$#" -eq 1 ]]; then
+  exit 0
+fi
+if [[ "$#" -ne 0 ]]; then
+  echo "Usage: run_pool_comparison_ci.sh [--dependencies-only]" >&2
+  exit 2
+fi
+
 ./migrate.sh
 # A fresh database is provided by GitHub Actions. Each of 27 trials creates 20
 # jobs = 540 accepted jobs, within the 1,000-job limit. No deletion is performed.
