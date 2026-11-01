@@ -7,12 +7,21 @@ import java.util.function.BiConsumer;
 
 /** All submissions serialize on the configuration row; reads remain concurrent. */
 public final class PostgresJobStore implements JobStore {
+    @FunctionalInterface
+    interface ConnectionOpener { Connection open() throws SQLException; }
     private final DatabaseConfig database;
+    private final ConnectionOpener submissionConnections;
     private final BiConsumer<String, Long> phaseObserver;
     public PostgresJobStore(DatabaseConfig database) { this(database, null); }
     // Internal, test-only observation; normal runtime has no observer.
     PostgresJobStore(DatabaseConfig database, BiConsumer<String, Long> observer) {
-        this.database = database;
+        this(database, database::connect, observer);
+    }
+    // Only isolated tests may supply an alternate connection source.
+    PostgresJobStore(DatabaseConfig database, ConnectionOpener submissionConnections,
+                     BiConsumer<String, Long> observer) {
+        this.database = java.util.Objects.requireNonNull(database);
+        this.submissionConnections = java.util.Objects.requireNonNull(submissionConnections);
         this.phaseObserver = observer;
     }
     private long tick() { return phaseObserver == null ? 0L : System.nanoTime(); }
@@ -22,7 +31,7 @@ public final class PostgresJobStore implements JobStore {
 
     @Override public Submission submit(String key, String payload) throws SQLException {
         long phaseStarted = tick();
-        try (Connection connection = database.connect()) {
+        try (Connection connection = submissionConnections.open()) {
             observe("jdbc_connect", phaseStarted);
             connection.setAutoCommit(false);
             try {
