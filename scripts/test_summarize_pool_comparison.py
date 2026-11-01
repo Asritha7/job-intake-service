@@ -31,6 +31,7 @@ class ComparisonSummaryTest(unittest.TestCase):
                         "source": "isolated_connection_comparison",
                         "mode": mode, "pool_size": 0 if mode == "fresh" else int(mode[-1]),
                         "clients": clients, "conflict_check": True, "transaction_state_check": True,
+                        "sql_rollback_check": True,
                         "create": phase(20, CREATE), "replay": phase(10, REPLAY),
                     }
                     (directory / f"r{round_number}-c{clients}-{mode}.json").write_text(
