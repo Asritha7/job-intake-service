@@ -112,6 +112,10 @@ JOB_STORE=memory ./run.sh 8080
 
 This mode loses jobs on restart and has no worker; workers always use PostgreSQL. There is no automatic fallback from PostgreSQL to memory.
 
+## Reproducible intake performance baseline
+
+A bounded, **opt-in** HTTP benchmark client is available at `scripts/performance_baseline.py`. It tests new-key acceptance and same-key replay with latency percentiles, requests/second and unexpected-response counts; it does not change the Java service or demonstrate a speedup. The client defaults to **dry run**, only permits loopback targets, and permanently consumes job slots when writes are explicitly enabled. Use an isolated disposable PostgreSQL database. See the [benchmark protocol and limitations](docs/performance-baseline.md).
+
 ## Scope and next milestone
 
 The worker is a local reference implementation, not a general execution platform. It uses a deterministic hash task, with no external side effects. Execution can repeat after a crash; the design does not promise exactly-once execution. It has no authentication, TLS, tenant isolation, key expiration, worker heartbeats, or production deployment. There is no arbitrary-task execution deadline; adding slower processors requires additional controls.
