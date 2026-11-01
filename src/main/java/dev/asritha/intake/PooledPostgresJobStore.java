@@ -13,7 +13,7 @@ public final class PooledPostgresJobStore implements JobStore, AutoCloseable {
     private final PostgresJobStore delegate;
 
     static int parseSize(String value) {
-        if (value == null || value.isBlank() || "0".equals(value)) return 0;
+        if (value == null || "0".equals(value)) return 0;
         if (!value.matches("[1-8]"))
             throw new IllegalArgumentException("JOB_DB_POOL_SIZE must be 0 (disabled) or 1..8");
         return Integer.parseInt(value);
