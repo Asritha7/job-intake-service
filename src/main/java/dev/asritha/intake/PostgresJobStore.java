@@ -15,18 +15,19 @@ public final class PostgresJobStore implements JobStore {
         this.database = database;
         this.phaseObserver = observer;
     }
+    private long tick() { return phaseObserver == null ? 0L : System.nanoTime(); }
     private void observe(String stage, long start) {
         if (phaseObserver != null) phaseObserver.accept(stage, System.nanoTime() - start);
     }
 
     @Override public Submission submit(String key, String payload) throws SQLException {
-        long phaseStarted = System.nanoTime();
+        long phaseStarted = tick();
         try (Connection connection = database.connect()) {
             observe("jdbc_connect", phaseStarted);
             connection.setAutoCommit(false);
             try {
                 int capacity;
-                phaseStarted = System.nanoTime();
+                phaseStarted = tick();
                 try (var statement = connection.prepareStatement("SELECT capacity FROM intake_config WHERE singleton = TRUE FOR UPDATE");
                      var result = statement.executeQuery()) {
                     if (!result.next()) throw new SQLException("Missing store configuration");
@@ -34,14 +35,14 @@ public final class PostgresJobStore implements JobStore {
                 }
                 observe("capacity_lock", phaseStarted);
                 // This statement sees a fresh READ COMMITTED snapshot after obtaining the lock.
-                phaseStarted = System.nanoTime();
+                phaseStarted = tick();
                 try (var statement = connection.prepareStatement("SELECT id, payload, status, attempts, result_sha256, last_error FROM jobs WHERE idempotency_key = ?")) {
                     statement.setString(1, key);
                     try (var result = statement.executeQuery()) {
                         if (result.next()) {
                             observe("key_lookup", phaseStarted);
                             Job existing = new Job(result.getString(1), result.getString(2), result.getString(3), result.getInt(4), result.getString(5), result.getString(6));
-                            long commitStarted = System.nanoTime();
+                            long commitStarted = tick();
                             connection.commit();
                             observe("commit", commitStarted);
                             return existing.payload().equals(payload)
@@ -50,20 +51,20 @@ public final class PostgresJobStore implements JobStore {
                     }
                 }
                 observe("key_lookup", phaseStarted);
-                phaseStarted = System.nanoTime();
+                phaseStarted = tick();
                 try (var statement = connection.prepareStatement("SELECT count(*) FROM jobs");
                      var result = statement.executeQuery()) {
                     result.next();
                     observe("capacity_count", phaseStarted);
                     if (result.getLong(1) >= capacity) {
-                        long commitStarted = System.nanoTime();
+                        long commitStarted = tick();
                         connection.commit();
                         observe("commit", commitStarted);
                         return new Submission(503, null);
                     }
                 }
                 Job job = new Job(UUID.randomUUID().toString(), payload);
-                phaseStarted = System.nanoTime();
+                phaseStarted = tick();
                 try (var statement = connection.prepareStatement("INSERT INTO jobs(id, idempotency_key, payload) VALUES (?, ?, ?)")) {
                     statement.setObject(1, UUID.fromString(job.id()));
                     statement.setString(2, key);
@@ -71,7 +72,7 @@ public final class PostgresJobStore implements JobStore {
                     statement.executeUpdate();
                 }
                 observe("insert", phaseStarted);
-                long commitStarted = System.nanoTime();
+                long commitStarted = tick();
                 connection.commit(); // Never return acceptance before PostgreSQL commits.
                 observe("commit", commitStarted);
                 return new Submission(201, job);
