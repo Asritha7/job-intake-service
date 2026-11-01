@@ -14,7 +14,7 @@ import uuid
 from collections import Counter
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -47,7 +47,7 @@ def request(method, url, key=None, payload=None, timeout=5):
     req = Request(url, data=data, headers=headers, method=method)
     started = time.perf_counter()
     try:
-        with build_opener(NoRedirect()).open(req, timeout=timeout) as response:
+        with build_opener(ProxyHandler({}), NoRedirect()).open(req, timeout=timeout) as response:
             status, body, location = response.status, response.read(65536), response.headers.get("Location")
     except HTTPError as exc:
         status, body, location = exc.code, exc.read(65536), exc.headers.get("Location")
