@@ -109,6 +109,14 @@ def main(argv=None):
             print(f"Plan: {args.new_jobs} new jobs, {args.concurrency} clients, "
                   f"{args.replay_percent}% replay, target {base}")
             return 0
+        # Reserve the report before any HTTP write. An existing path must never
+        # cause permanent job submissions followed by an output failure.
+        output_path = None
+        if args.output:
+            from pathlib import Path
+            output_path = Path(args.output)
+            with output_path.open("x", encoding="utf-8"):
+                pass
         ready = request("GET", base + "/ready", timeout=args.timeout)
         if ready["status"] != 200:
             raise ValueError("Readiness probe failed; benchmark did not submit jobs")
@@ -139,10 +147,8 @@ def main(argv=None):
             ],
         }
         output = json.dumps(report, indent=2, sort_keys=True) + "\n"
-        if args.output:
-            from pathlib import Path
-            path = Path(args.output)
-            with path.open("x", encoding="utf-8") as handle:
+        if output_path is not None:
+            with output_path.open("w", encoding="utf-8") as handle:
                 handle.write(output)
         else:
             print(output, end="")
