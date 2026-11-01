@@ -1,0 +1,59 @@
+name: Isolated PostgreSQL performance baseline
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/performance_baseline.py'
+      - 'scripts/run_ci_performance.sh'
+      - 'scripts/summarize_performance_ci.py'
+      - 'scripts/test_summarize_performance_ci.py'
+      - '.github/workflows/performance-baseline.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.11
+        env:
+          POSTGRES_DB: jobs
+          POSTGRES_USER: jobs
+          POSTGRES_PASSWORD: isolated_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jobs -d jobs"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      DATABASE_URL: jdbc:postgresql://127.0.0.1:5432/jobs
+      DATABASE_USER: jobs
+      DATABASE_PASSWORD: isolated_ci_password
+      DATABASE_SCHEMA: public
+      RUN_INTAKE_PERF_CI: isolated-postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Validate baseline summarizer
+        run: python3 -m unittest scripts.test_summarize_performance_ci -v
+      - name: Measure real API against disposable PostgreSQL
+        run: bash scripts/run_ci_performance.sh
+      - name: Save raw measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: isolated-postgres-baseline
+          path: |
+            .local/performance-ci/*.json
+            .local/performance-ci/summary.md
+          if-no-files-found: warn
+          retention-days: 14
