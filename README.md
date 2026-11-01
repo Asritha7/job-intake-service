@@ -1,17 +1,45 @@
 # Job Intake Service
 
-A Java HTTP reference project demonstrating durable job acceptance, idempotent retries, bounded storage, background execution, and concurrent integration tests. PostgreSQL stores accepted jobs and request keys so retries can return the same ID after the Java service restarts.
+**Durable job acceptance, safe retries, and crash-recoverable workers — built with Java 21 and PostgreSQL.**
 
-This is a standalone portfolio exercise, with no employer code or production data. A separate worker executes one deliberately small task: computing the SHA-256 digest of each accepted text payload. It does not interpret payload text as instructions or call external services.
+A focused backend engineering reference that explores what happens when clients retry after ambiguous commits, concurrent API instances accept the same work, workers crash, and PostgreSQL becomes unavailable. Instead of hiding these cases behind a framework, the project makes its transaction boundaries and operational limits explicit.
 
-## Start with PostgreSQL
+> **Scope:** A runnable, local reference implementation and a reproducible reliability laboratory — **not** a deployed multi-tenant production queue. Jobs run a deterministic SHA-256 calculation, not arbitrary user instructions or external effects.
 
-Requires JDK 21+, `curl`, `shasum`, and Docker Compose (or an existing PostgreSQL 17+ database). The scripts fetch a pinned pgJDBC driver from Maven Central and verify its SHA-256 checksum. No Maven or Gradle installation is required.
+## At a glance
+
+| Concern | Implementation |
+| --- | --- |
+| **Durable acceptance** | PostgreSQL transactions; acknowledge a new job only after commit |
+| **Idempotent HTTP** | Same key + same payload → original job ID (200); conflicting payload → 409 |
+| **Concurrent API instances** | Shared row lock, unique key constraint and global capacity enforcement |
+| **Execution recovery** | Background workers, leased claims, ownership tokens, stale-worker fencing and bounded retries |
+| **Operational limits** | Loopback HTTP, bounded handler threads/queue, readiness/liveness separation, metrics and graceful shutdown |
+| **Database lifecycle** | Explicit checksum-verified migrations; preserved state across Java restarts |
+| **Optional JDBC pooling** | Explicitly enabled HikariCP pool, 1–8 connections per API process; fresh JDBC stays the default |
+| **Evidence** | Real PostgreSQL integration checks, independent-JVM races, fault-focused pool tests and CI benchmark reports |
+
+## Architecture
+
+```mermaid
+flowchart LR
+    C[Client] -->|POST /jobs + idempotency key| A[Java HTTP API]
+    A -->|Transactional admission| DB[(PostgreSQL)]
+    W1[Worker A] -->|Leased claim| DB
+    W2[Worker B] -->|Leased claim| DB
+    DB -->|Status and result| A
+    A -->|GET /jobs/id| C
+```
+
+The API and workers share PostgreSQL as the durable source of truth. Admission serializes on a configuration row to preserve a global job-capacity bound. Workers use database-backed claims and ownership fencing; expired work can be retried, so execution is **at least once**, not exactly once. See the [architecture and trade-offs](docs/design.md) and [worker lifecycle](docs/worker-walkthrough.md).
+
+## Run locally
+
+Requires **JDK 21+**, PostgreSQL 17+ (or Docker Compose), `curl` and `shasum`. Build scripts retrieve checksum-pinned pgJDBC, HikariCP and SLF4J API jars from Maven Central; no Maven/Gradle installation is needed.
 
 ```sh
 export DATABASE_URL='jdbc:postgresql://127.0.0.1:5432/jobs'
 export DATABASE_USER=jobs
-# Choose a password for your local database (input is not echoed).
 read -r -s -p 'Local database password: ' DATABASE_PASSWORD; echo
 export DATABASE_PASSWORD
 
@@ -20,120 +48,79 @@ docker compose up -d --wait
 ./run.sh 8080
 ```
 
-The password input command above is for Bash. Other shells can use their own hidden-input facility. `.env.example` lists the variables, but Java does not automatically load `.env` files. An existing database must use UTF-8 encoding. `DATABASE_SCHEMA` defaults to `public`; a custom schema must already exist.
-
-`migrate.sh` applies ordered, checksum-verified migrations in one transaction. Migration 001 is unchanged; migration 002 adds execution state. Existing databases from the persistence milestone are adopted into the migration ledger without deleting jobs. Re-running migrations preserves state and rejects changes to recorded SQL files. Stop old API/worker processes before upgrading, migrate, then start the new versions. The application does not create tables at startup. Missing or inaccessible storage produces `503 storage_unavailable` on storage-dependent requests.
-
-The HTTP server and Compose database port bind to **127.0.0.1**. `docker compose stop` stops the database while retaining its named volume. Do not delete that volume if you want to retain jobs. Changing the shell password after the database is initialized does not change the existing database user's password.
-
-## Submit and retry
+The password command above uses Bash. Environment variables are not loaded automatically from `.env`. Existing PostgreSQL installations should use a UTF-8 database; custom schemas must already exist. Migrations are explicit and checksum-verified, preserving existing jobs.
 
 In another terminal:
 
 ```sh
 curl -i -X POST http://127.0.0.1:8080/jobs \
   -H 'Content-Type: text/plain' \
-  -H 'Idempotency-Key: daily-report-001' \
-  --data 'Generate the daily report'
+  -H 'Idempotency-Key: demo-001' \
+  --data 'hello'
 ```
 
-The response is `201 Created`, a generated job ID with status `accepted` (queued), zero attempts, and `Location: /jobs/<id>`.
+Submit the **same key and payload** again to receive the original job ID. Reuse the key with a different payload to get `409 Conflict`.
 
-- Repeat the same key and exact payload: `200 OK`, original ID and current execution state. The ID is stable; status, attempts and result may change as work progresses.
-- Reuse the key with different text: `409 Conflict`.
-- Stop and restart Java against the same database, then retry: `200 OK`, original ID.
-- Use another key with the same text: a separate job is accepted.
-
-Payloads are not echoed in HTTP responses. Keys currently have a global scope within the database schema; there are no tenant accounts or key-expiry rules.
-
-## Execute queued jobs
-
-In another terminal with the same `DATABASE_*` environment:
+To execute queued jobs:
 
 ```sh
-./worker.sh          # continuous polling; Ctrl+C stops the process
-./worker.sh --once   # alternatively, process at most one eligible job
+./worker.sh
+# Or run one eligible job, then exit:
+./worker.sh --once
 ```
 
-A job moves from `accepted` to `running`, then `succeeded` or `failed`. Processor failures with attempts remaining return to `accepted` with a retry delay. GET responses include `attempts`, nullable `result_sha256`, and nullable `last_error`. Neither payload text nor internal lease tokens are returned.
+The demo worker computes the payload's SHA-256 digest. It does **not** interpret or execute the payload as a command.
 
-The worker uses a 30-second lease, a fresh ownership token per attempt, and up to three attempts. Expired leases can be reclaimed; stale owners cannot overwrite newer attempts. Two workers can process different jobs concurrently. See the [worker experiment and state diagram](docs/worker-walkthrough.md).
+## HTTP contract
 
-## API contract
+| Route | Behavior |
+| --- | --- |
+| `GET /health` | Process liveness, independent of database availability |
+| `GET /ready` | Readable PostgreSQL schema/configuration → 200; otherwise 503 |
+| `POST /jobs` | New 201; matching replay 200; conflicting key 409; capacity full 503 |
+| `GET /jobs/{id}` | Current job status, attempts and result or 404 |
+| `GET /metrics` | Process-local HTTP, executor and acceptance signals |
 
-| Endpoint | Behavior |
-|---|---|
-| `GET /health` | Process liveness; does not check PostgreSQL |
-| `GET /ready` | `200` when the store tables/configuration are readable; otherwise `503` |
-| `POST /jobs` | `201` new acceptance; `200` replay; `409` conflicting reuse |
-| `GET /jobs/<id>` | `200` current job state/result; `404` unknown ID |
-| `GET /metrics` | Process-local HTTP, executor, storage-error, and acceptance metrics |
+Requests accept a 1–80-character ASCII idempotency key and 1–8,192 bytes of nonblank UTF-8 plain text. Payload content is not echoed in API responses. A new job enters `accepted`, then transitions through worker execution to `succeeded` or `failed`, with bounded retry handling.
 
-The key must contain 1–80 ASCII letters, digits, dots, underscores, or hyphens. Bodies must be nonblank UTF-8 text, at most 8,192 bytes, without NUL characters, with `Content-Type: text/plain`. Payload comparison is exact, including whitespace. Invalid input returns `400`, unsupported media type `415`, oversized payload `413`, and wrong method `405`.
+**When a commit response is ambiguous, retry with the original key and identical payload.** Accepted jobs survive Java process restarts when the same database is preserved.
 
-The initial database capacity is 1,000 jobs. `503 capacity_exhausted` rejects new keys when full, while matching keys remain replayable and conflicting reuse still returns `409`. Capacity is stored in `intake_config`, shared across service instances. It is not reset by restarting Java or re-running migration 001. There is no deletion or automatic eviction API. Completed and failed jobs still occupy capacity and retain their idempotency keys.
+## Optional bounded connection pooling
 
-## How persistence works
-
-1. Start a database transaction using READ COMMITTED isolation.
-2. Lock the single configuration row with `SELECT ... FOR UPDATE`.
-3. Look up the idempotency key; return its existing job or a conflict if present.
-4. Check capacity, then insert a job with a database-enforced unique key.
-5. Commit before returning acceptance to the client.
-
-All submissions serialize on that row, including replays. This is deliberately simple and keeps the global capacity check correct across instances; it is a throughput bottleneck. Lookups do not take this lock. Each operation opens and closes a JDBC connection; connection pooling is a later improvement.
-
-If a connection fails during commit, the client may receive `503` even though the commit succeeded. Retry with the **same key and payload** to resolve that ambiguity. Retention of committed jobs depends on retaining the database and its normal durability settings; application restarts alone do not erase them.
-
-## HTTP resource limits
-
-The API uses eight handler threads and at most 64 queued executor tasks. When both are occupied, excess connections are closed by the JDK before a handler can generate an HTTP response. Clients should back off and retry submissions with the same key and payload.
-
-The built-in JDK provider is configured before startup for 128 open connections, 16 idle connections, 32 headers, a 16 KiB header-section limit, a 10-second request-receive budget, and a 15-second response budget. Timeout enforcement is periodic, not an exact deadline. Unread rejected bodies have an 8 KiB drain budget, also subject to the request timer. Shutdown stops accepting connections and gives current exchanges up to five seconds before closing them and interrupting executor tasks.
-
-`/health`, `/ready`, and `/metrics` share the same executor, so they can become unreachable during saturation. These controls do not replace a production edge proxy or deployment-specific load testing.
-
-## Verification
+Fresh JDBC connections remain the default. To opt into a per-API-process connection pool after migrating your local database:
 
 ```sh
-./test.sh             # HTTP contract and operational socket tests
-./test.sh --postgres  # additionally requires DATABASE_* and a running PostgreSQL server
+export JOB_DB_POOL_SIZE=2
+./run.sh 8080
 ```
 
-The PostgreSQL tests create a uniquely named schema, apply the real SQL, and remove only that test schema afterward. The test database user needs permission to create schemas. Never point tests at a production database.
+Only `0` (disabled) or `1`–`8` is allowed. The pool is closed with the HTTP server. The worker continues to use fresh JDBC connections. A pool limits connections *per Java process*, not database-wide; budget separately for multiple API replicas, workers and administrators. Pool saturation and storage errors return sanitized `503 storage_unavailable`; retry safely using the same key.
 
-Acceptance tests cover 24 matching requests across two server instances, concurrent conflicting payloads, database uniqueness and length constraints, rollback after failed insertion, shared-capacity races, exact Unicode payload replay, complete child-JVM restarts, repeatable bootstrap, and unavailable-schema responses. Worker tests additionally cover competing claims, known digest results, stale-token rejection, scheduled retries, retry exhaustion, a child process that halts after claiming, and upgrading an existing migration-001 database. GitHub Actions runs all suites against PostgreSQL 17 on JDK 21.
+See [configuration, shutdown, failure semantics and connection budgeting](docs/optional-jdbc-pool.md).
 
-For the original non-durable learning mode only:
+## Verification and reproducible evidence
 
 ```sh
-JOB_STORE=memory ./run.sh 8080
+./test.sh             # Offline/HTTP operational checks
+./test.sh --postgres  # Also runs real PostgreSQL and worker integration suites
 ```
 
-This mode loses jobs on restart and has no worker; workers always use PostgreSQL. There is no automatic fallback from PostgreSQL to memory.
+PostgreSQL tests use uniquely named schemas; they test concurrent API instances, stable IDs, conflicting requests, capacity races, worker lease ownership, restart recovery, and—when pooling is enabled—transaction rollback, readiness and connection cleanup.
 
-## Reproducible intake performance baseline
+The [CI performance methodology](docs/performance-ci.md) and experimental reports cover:
 
-A bounded, **opt-in** HTTP benchmark client is available at `scripts/performance_baseline.py`. It tests new-key acceptance and same-key replay with latency percentiles, requests/second and unexpected-response counts; it does not change the Java service or demonstrate a speedup. The client defaults to **dry run**, only permits loopback targets, and permanently consumes job slots when writes are explicitly enabled. Use an isolated disposable PostgreSQL database. See the [benchmark protocol and limitations](docs/performance-baseline.md).
+- [HTTP acceptance baseline](docs/performance-baseline.md), [PostgreSQL wait events](docs/postgres-wait-diagnostics.md) and [submission phase timings](docs/admission-phase-timing.md).
+- [Fresh connections versus bounded pools](docs/connection-pool-comparison.md), plus [pool exhaustion, backend replacement and independent-JVM correctness](docs/pool-resilience.md).
+- [Operational behavior and resource budgets](docs/operations.md), [migration details](docs/persistence-walkthrough.md), and [experimental agent workflows](docs/agent-workflows.md).
 
-The separate [isolated PostgreSQL CI performance experiment](docs/performance-ci.md) runs repeated measurements against a disposable GitHub Actions database and stores raw JSON artifacts. These numbers describe CI-local behavior only, not production throughput or a proven lock bottleneck.
+These measurements came from small, isolated GitHub Actions workloads. They **do not** demonstrate sustainable production throughput, an end-to-end SLA, or an exact lock-wait duration. Raw run artifacts and CI checks are the source of record.
 
-The [PostgreSQL wait-event diagnostic](docs/postgres-wait-diagnostics.md) observes lock waits during disposable CI trials without changing application transactions. Its sampled counts are not lock durations or proof of a bottleneck.
+## Design boundaries
 
-The [isolated admission phase-timing experiment](docs/admission-phase-timing.md) measures JDBC connection, configuration-row lock statement, idempotency lookup, capacity counting, insertion and commit inside the real PostgreSQL store. It uses an optional test-only observer (disabled in the normal service) and a separately bounded CI probe. Phase timings are not exact server-side lock waits or an additive breakdown of HTTP latency.
+The initial store capacity is **1,000 jobs**, including completed and failed jobs; there is no expiry or eviction API. The single configuration-row lock prioritizes correctness over admission parallelism. Worker leases are 30 seconds, with no heartbeat extension for long tasks. The system has no authentication, TLS termination, tenant isolation, dead-letter administration, arbitrary external side-effect idempotency or production deployment.
 
-The [isolated JDBC connection comparison](docs/connection-pool-comparison.md) contrasts fresh connections against bounded HikariCP pools in a disposable PostgreSQL CI workflow. All Hikari dependencies live outside normal compilation, and no production pool is enabled. The experiment checks transaction recovery and reports provisional timings rather than a production speedup.
+Those are conscious boundaries rather than hidden guarantees. For future evolution, the most valuable next areas are active-capacity versus retention separation, longer-running worker controls, real downstream idempotency, and operational telemetry.
 
-The [isolated pool resilience experiment](docs/pool-resilience.md) checks bounded acquisition failure, recovery after a PostgreSQL backend is terminated, and shared idempotency/capacity guarantees across **two independent Java processes with separate Hikari pools**. It runs only on a disposable GitHub Actions database; production still uses fresh JDBC connections.
+---
 
-## Scope and next milestone
-
-The worker is a local reference implementation, not a general execution platform. It uses a deterministic hash task, with no external side effects. Execution can repeat after a crash; the design does not promise exactly-once execution. It has no authentication, TLS, tenant isolation, key expiration, worker heartbeats, or production deployment. There is no arbitrary-task execution deadline; adding slower processors requires additional controls.
-
-`/ready` checks basic read access, not every possible write permission or available capacity. Metrics describe HTTP acceptance in the current process and reset on restart; jobs and execution attempts persist. JDBC connection/socket and statement/lock timeouts bound database waits. HTTP handling uses bounded threads and a bounded queue, JDK transport limits, and a five-second shutdown grace period; see the operational guide for the exact boundaries.
-
-See [design notes](docs/design.md), the [persistence exercise](docs/persistence-walkthrough.md), and the [worker exercise](docs/worker-walkthrough.md). See the [operational guide](docs/operations.md) for limits, metric meanings, overload behavior, and shutdown. Further work could add durable worker metrics, connection pooling, and a measured load baseline.
-
-## Development agent
-
-A manually selected [reliability test agent](.github/agents/job-intake-reliability.agent.md) can prepare focused regression-test PRs. See the [pilot task](docs/reliability-agent-pilot.md) and [broader workflow proposals](docs/agent-workflows.md). Hosted execution requires Copilot cloud agent access; the profile itself does not run jobs or merge changes.
+**Personal engineering project.** No employer source code, internal data or production credentials are included.

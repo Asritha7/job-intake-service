@@ -166,12 +166,35 @@ public final class JobIntakeServer implements AutoCloseable {
         if (!closing.compareAndSet(false, true)) return;
         server.stop(5);
         executor.shutdownNow();
+        if (store instanceof AutoCloseable resource) {
+            try { resource.close(); }
+            catch (Exception failure) {
+                // Never output JDBC secrets or connection diagnostics on shutdown.
+                System.err.println("Job store shutdown failed");
+            }
+        }
     }
     public static void main(String[] args) throws IOException {
         int port = args.length == 0 ? 8080 : Integer.parseInt(args[0]);
-        JobStore store = "memory".equals(System.getenv("JOB_STORE"))
-            ? new InMemoryJobStore(1000) : new PostgresJobStore(DatabaseConfig.fromEnvironment());
-        JobIntakeServer application = new JobIntakeServer(port, store);
+        int poolSize = PooledPostgresJobStore.parseSize(System.getenv("JOB_DB_POOL_SIZE"));
+        JobStore store;
+        if ("memory".equals(System.getenv("JOB_STORE"))) {
+            if (poolSize != 0) throw new IllegalArgumentException("Pooling requires PostgreSQL mode");
+            store = new InMemoryJobStore(1000);
+        } else {
+            DatabaseConfig database = DatabaseConfig.fromEnvironment();
+            store = poolSize == 0 ? new PostgresJobStore(database)
+                    : new PooledPostgresJobStore(database, poolSize);
+        }
+        JobIntakeServer application;
+        try {
+            application = new JobIntakeServer(port, store);
+        } catch (IOException | RuntimeException startupFailure) {
+            if (store instanceof AutoCloseable resource) {
+                try { resource.close(); } catch (Exception ignored) { }
+            }
+            throw startupFailure;
+        }
         Runtime.getRuntime().addShutdownHook(new Thread(application::close));
         application.start();
         System.out.println("Job intake listening on http://127.0.0.1:" + application.port());

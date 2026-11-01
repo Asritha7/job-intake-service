@@ -94,7 +94,7 @@ public final class PostgresJobStore implements JobStore {
     @Override public Job find(String id) throws SQLException {
         final UUID uuid;
         try { uuid = UUID.fromString(id); } catch (IllegalArgumentException invalid) { return null; }
-        try (var connection = database.connect();
+        try (var connection = submissionConnections.open();
              var statement = connection.prepareStatement("SELECT id, payload, status, attempts, result_sha256, last_error FROM jobs WHERE id = ?")) {
             statement.setObject(1, uuid);
             try (var result = statement.executeQuery()) {
@@ -103,7 +103,7 @@ public final class PostgresJobStore implements JobStore {
         }
     }
     @Override public boolean ready() throws SQLException {
-        try (var connection = database.connect();
+        try (var connection = submissionConnections.open();
              var statement = connection.prepareStatement("SELECT capacity, (SELECT count(attempts) FROM jobs WHERE FALSE) FROM intake_config WHERE singleton = TRUE");
              var result = statement.executeQuery()) {
             return result.next();
