@@ -118,6 +118,8 @@ A bounded, **opt-in** HTTP benchmark client is available at `scripts/performance
 
 The separate [isolated PostgreSQL CI performance experiment](docs/performance-ci.md) runs repeated measurements against a disposable GitHub Actions database and stores raw JSON artifacts. These numbers describe CI-local behavior only, not production throughput or a proven lock bottleneck.
 
+The [PostgreSQL wait-event diagnostic](docs/postgres-wait-diagnostics.md) observes lock waits during disposable CI trials without changing application transactions. Its sampled counts are not lock durations or proof of a bottleneck.
+
 ## Scope and next milestone
 
 The worker is a local reference implementation, not a general execution platform. It uses a deterministic hash task, with no external side effects. Execution can repeat after a crash; the design does not promise exactly-once execution. It has no authentication, TLS, tenant isolation, key expiration, worker heartbeats, or production deployment. There is no arbitrary-task execution deadline; adding slower processors requires additional controls.
