@@ -55,7 +55,8 @@ def summarize(folder):
                         or item.get("clients") != clients
                         or item.get("pool_size") != (0 if mode == "fresh" else int(mode[-1]))
                         or item.get("conflict_check") is not True
-                        or item.get("transaction_state_check") is not True):
+                        or item.get("transaction_state_check") is not True
+                        or item.get("sql_rollback_check") is not True):
                     raise ValueError(f"Invalid benchmark provenance / integrity: {file.name}")
                 check_phase(item.get("create", {}), 20, mode, file.name)
                 check_phase(item.get("replay", {}), 10, mode, file.name)
