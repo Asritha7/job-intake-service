@@ -22,7 +22,8 @@ public final class DatabaseConfig {
             System.getenv().getOrDefault("DATABASE_SCHEMA", "public"));
     }
     public DatabaseConfig withSchema(String name) { return new DatabaseConfig(url, user, password, name); }
-    public Connection connect() throws SQLException {
+    String jdbcUrl() { return url; }
+    Properties connectionProperties() {
         Properties properties = new Properties();
         properties.setProperty("user", user);
         properties.setProperty("password", password);
@@ -30,7 +31,10 @@ public final class DatabaseConfig {
         properties.setProperty("connectTimeout", "3");
         properties.setProperty("socketTimeout", "8");
         properties.setProperty("options", "-c statement_timeout=5000 -c lock_timeout=3000");
-        Connection connection = DriverManager.getConnection(url, properties);
+        return properties;
+    }
+    public Connection connect() throws SQLException {
+        Connection connection = DriverManager.getConnection(url, connectionProperties());
         connection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
         return connection;
     }
