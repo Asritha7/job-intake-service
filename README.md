@@ -122,6 +122,8 @@ The [PostgreSQL wait-event diagnostic](docs/postgres-wait-diagnostics.md) observ
 
 The [isolated admission phase-timing experiment](docs/admission-phase-timing.md) measures JDBC connection, configuration-row lock statement, idempotency lookup, capacity counting, insertion and commit inside the real PostgreSQL store. It uses an optional test-only observer (disabled in the normal service) and a separately bounded CI probe. Phase timings are not exact server-side lock waits or an additive breakdown of HTTP latency.
 
+The [isolated JDBC connection comparison](docs/connection-pool-comparison.md) contrasts fresh connections against bounded HikariCP pools in a disposable PostgreSQL CI workflow. All Hikari dependencies live outside normal compilation, and no production pool is enabled. The experiment checks transaction recovery and reports provisional timings rather than a production speedup.
+
 ## Scope and next milestone
 
 The worker is a local reference implementation, not a general execution platform. It uses a deterministic hash task, with no external side effects. Execution can repeat after a crash; the design does not promise exactly-once execution. It has no authentication, TLS, tenant isolation, key expiration, worker heartbeats, or production deployment. There is no arbitrary-task execution deadline; adding slower processors requires additional controls.
