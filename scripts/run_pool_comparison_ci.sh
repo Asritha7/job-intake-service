@@ -33,7 +33,8 @@ download_verified \
 
 ./scripts/compile.sh
 javac --release 21 -cp 'build/classes:build/deps/*:build/perf-deps/*' -d build/classes \
-  src/perf/java/dev/asritha/intake/PoolComparisonProbe.java
+  src/perf/java/dev/asritha/intake/PoolComparisonProbe.java \
+  src/perf/java/dev/asritha/intake/PoolComparisonProbeTest.java
 java -cp 'build/classes:build/deps/*:build/perf-deps/*' \
   dev.asritha.intake.PoolComparisonProbeTest
 
