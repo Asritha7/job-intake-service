@@ -59,16 +59,16 @@ public final class PoolReliabilityProbe {
 
     static void lostBackendRecovery() throws Exception {
         try (HikariDataSource pool = PoolComparisonProbe.pool(1)) {
-            long backendPid;
+            int backendPid;
             try (Connection broken = pool.getConnection()) {
                 try (var select = broken.createStatement();
                      var rows = select.executeQuery("SELECT pg_backend_pid()")) {
                     check(rows.next(), "Missing backend PID");
-                    backendPid = rows.getLong(1);
+                    backendPid = rows.getInt(1);
                 }
                 try (Connection admin = DatabaseConfig.fromEnvironment().connect();
                      var kill = admin.prepareStatement("SELECT pg_terminate_backend(?)")) {
-                    kill.setLong(1, backendPid);
+                    kill.setInt(1, backendPid);
                     try (var result = kill.executeQuery()) {
                         check(result.next() && result.getBoolean(1),
                                 "Could not terminate owned ephemeral backend");
