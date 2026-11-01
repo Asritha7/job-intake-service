@@ -1,0 +1,60 @@
+name: Isolated JDBC connection pool comparison
+
+on:
+  pull_request:
+    paths:
+      - 'src/main/java/dev/asritha/intake/PostgresJobStore.java'
+      - 'src/perf/**'
+      - 'scripts/run_pool_comparison_ci.sh'
+      - 'scripts/summarize_pool_comparison.py'
+      - 'scripts/test_summarize_pool_comparison.py'
+      - '.github/workflows/connection-pool-comparison.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.11
+        env:
+          POSTGRES_DB: jobs
+          POSTGRES_USER: jobs
+          POSTGRES_PASSWORD: isolated_ci_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jobs -d jobs"
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 15
+    env:
+      DATABASE_URL: jdbc:postgresql://127.0.0.1:5432/jobs
+      DATABASE_USER: jobs
+      DATABASE_PASSWORD: isolated_ci_password
+      DATABASE_SCHEMA: public
+      RUN_INTAKE_PERF_CI: isolated-postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Validate report aggregation offline
+        run: python3 -m unittest scripts.test_summarize_pool_comparison -v
+      - name: Run bounded PostgreSQL connection comparison
+        run: bash scripts/run_pool_comparison_ci.sh
+      - name: Archive raw observations
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jdbc-pool-comparison
+          path: |
+            .local/connection-compare/*.json
+            .local/connection-compare/summary.md
+          if-no-files-found: warn
+          retention-days: 14
