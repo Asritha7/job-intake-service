@@ -121,6 +121,16 @@ public final class PoolComparisonProbe {
             if (store.submit(keys.get(0), "pool-compare-payload-0").status() != 200)
                 throw new IllegalStateException("Connection not reusable after conflict");
             if (source != null) {
+                boolean sqlRejected = false;
+                try {
+                    store.submit(prefix + "-invalid key", "invalid SQL constraint input");
+                } catch (java.sql.SQLException expected) {
+                    sqlRejected = true;
+                }
+                if (!sqlRejected) throw new IllegalStateException("Database constraint must reject invalid key");
+                // Failure is rolled back and the borrowed connection remains usable.
+                if (store.submit(prefix + "-after-failure", "recovered").status() != 201)
+                    throw new IllegalStateException("Connection not reusable after failed SQL transaction");
                 try (Connection connection = source.getConnection()) {
                     if (!connection.getAutoCommit()
                             || connection.getTransactionIsolation() != Connection.TRANSACTION_READ_COMMITTED)
@@ -132,7 +142,7 @@ public final class PoolComparisonProbe {
                     + "\"mode\":\"" + mode + "\",\"pool_size\":" + poolSize
                     + ",\"clients\":" + clients + ",\"create\":" + create
                     + ",\"replay\":" + replay + ",\"conflict_check\":true,"
-                    + "\"transaction_state_check\":true}\n";
+                    + "\"transaction_state_check\":true,\"sql_rollback_check\":true}\n";
         }
     }
 
