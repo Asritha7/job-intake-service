@@ -30,7 +30,9 @@ public final class PooledPostgresJobStore implements JobStore, AutoCloseable {
         config.setMinimumIdle(0);
         config.setConnectionTimeout(3_000);
         config.setValidationTimeout(1_000);
-        config.setInitializationFailTimeout(1);
+        // Preserve the existing liveness contract when PostgreSQL is temporarily down.
+        // /ready and storage-backed calls still fail closed until the DB recovers.
+        config.setInitializationFailTimeout(-1);
         config.setAutoCommit(true);
         config.setTransactionIsolation("TRANSACTION_READ_COMMITTED");
         source = new HikariDataSource(config);
@@ -42,6 +44,9 @@ public final class PooledPostgresJobStore implements JobStore, AutoCloseable {
     }
     @Override public Job find(String id) throws SQLException { return delegate.find(id); }
     @Override public boolean ready() throws SQLException { return delegate.ready(); }
+
+    boolean isClosed() { return source.isClosed(); }
+    int maximumPoolSize() { return source.getMaximumPoolSize(); }
 
     @Override public void close() { source.close(); }
 }
