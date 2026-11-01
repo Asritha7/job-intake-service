@@ -120,17 +120,17 @@ public final class PoolComparisonProbe {
             // Inspect transaction state after a 409, including pooled reuse.
             if (store.submit(keys.get(0), "pool-compare-payload-0").status() != 200)
                 throw new IllegalStateException("Connection not reusable after conflict");
+            boolean sqlRejected = false;
+            try {
+                store.submit(prefix + "-invalid key", "invalid SQL constraint input");
+            } catch (java.sql.SQLException expected) {
+                sqlRejected = true;
+            }
+            if (!sqlRejected) throw new IllegalStateException("Database constraint must reject invalid key");
+            // Both strategies must roll back the failed transaction and remain usable.
+            if (store.submit(prefix + "-after-failure", "recovered").status() != 201)
+                throw new IllegalStateException("Connection not reusable after failed SQL transaction");
             if (source != null) {
-                boolean sqlRejected = false;
-                try {
-                    store.submit(prefix + "-invalid key", "invalid SQL constraint input");
-                } catch (java.sql.SQLException expected) {
-                    sqlRejected = true;
-                }
-                if (!sqlRejected) throw new IllegalStateException("Database constraint must reject invalid key");
-                // Failure is rolled back and the borrowed connection remains usable.
-                if (store.submit(prefix + "-after-failure", "recovered").status() != 201)
-                    throw new IllegalStateException("Connection not reusable after failed SQL transaction");
                 try (Connection connection = source.getConnection()) {
                     if (!connection.getAutoCommit()
                             || connection.getTransactionIsolation() != Connection.TRANSACTION_READ_COMMITTED)
