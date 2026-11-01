@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'scripts/performance_baseline.py'
+      - 'src/test/java/dev/asritha/intake/PgWaitSampler.java'
       - 'scripts/run_ci_performance.sh'
       - 'scripts/summarize_performance_ci.py'
       - 'scripts/test_summarize_performance_ci.py'

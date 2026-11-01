@@ -53,7 +53,9 @@ for round in 1 2 3; do
     3) order="8 1 4";;
   esac
   for clients in $order; do
-    python3 scripts/performance_baseline.py --url http://127.0.0.1:8080 \
+    java -cp 'build/classes:build/deps/*' dev.asritha.intake.PgWaitSampler \
+      ".local/performance-ci/round-${round}-clients-${clients}.wait.json" -- \
+      python3 scripts/performance_baseline.py --url http://127.0.0.1:8080 \
       --allow-writes --new-jobs 30 --concurrency "$clients" --replay-percent 50 \
       --output ".local/performance-ci/round-${round}-clients-${clients}.json"
   done

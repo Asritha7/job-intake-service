@@ -32,6 +32,13 @@ class BenchmarkSummaryTests(unittest.TestCase):
                 path = folder / f"round-{round_number}-clients-{count}.json"
                 path.write_text(json.dumps(fake_report(count, create_rate=40.0 + round_number)),
                                 encoding="utf-8")
+                (folder / f"round-{round_number}-clients-{count}.wait.json").write_text(
+                    json.dumps({"source": "pg_stat_activity_sampling", "benchmark_exit_code": 0,
+                                "sampler_errors": 0, "sample_rounds": 30,
+                                "backend_observations": 45,
+                                "observations": {"capacity_lock_wait": count,
+                                                 "not_waiting": 45 - count}}),
+                    encoding="utf-8")
 
     def test_complete_matrix_and_honest_aggregation(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -41,7 +48,33 @@ class BenchmarkSummaryTests(unittest.TestCase):
             self.assertEqual(report["results"]["4"]["median_accepts_per_second"], 42.0)
             self.assertEqual(report["results"]["4"]["range_accepts_per_second"], [41.0, 43.0])
             self.assertEqual(len(report["results"]["4"]["trials"]), 3)
+            self.assertEqual(report["results"]["4"]["total_capacity_lock_wait_observations"], 12)
+            self.assertEqual(report["results"]["4"]["total_backend_observations"], 135)
+            self.assertIn("12 / 135", to_markdown(report))
             self.assertIn("No production throughput", to_markdown(report))
+
+    def test_rejects_sampler_failure_and_missing_wait_data(self):
+        with tempfile.TemporaryDirectory() as temp:
+            folder = Path(temp)
+            self.populate(folder)
+            wait_path = folder / "round-2-clients-4.wait.json"
+            wait_path.unlink()
+            with self.assertRaises(FileNotFoundError):
+                summarize(folder)
+            wait_path.write_text(json.dumps({"source": "pg_stat_activity_sampling",
+                                            "sampler_errors": 1, "sample_rounds": 5,
+                                            "benchmark_exit_code": 0, "observations": {}}),
+                                 encoding="utf-8")
+            with self.assertRaises(ValueError):
+                summarize(folder)
+            wait_path.write_text(json.dumps({"source": "pg_stat_activity_sampling",
+                                            "sampler_errors": 0, "sample_rounds": 5,
+                                            "benchmark_exit_code": 0,
+                                            "backend_observations": 99,
+                                            "observations": {"capacity_lock_wait": 1}}),
+                                 encoding="utf-8")
+            with self.assertRaises(ValueError):
+                summarize(folder)
 
     def test_rejects_missing_or_incorrect_workload(self):
         with tempfile.TemporaryDirectory() as temp:
