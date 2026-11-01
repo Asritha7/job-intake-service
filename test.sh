@@ -2,6 +2,7 @@
 set -eu
 cd "$(dirname "$0")"
 ./scripts/compile.sh
+python3 -m unittest scripts.test_performance_baseline -v
 java -cp 'build/classes:build/deps/*' dev.asritha.intake.JobIntakeServerTest
 java -cp 'build/classes:build/deps/*' dev.asritha.intake.HttpOperationsTest
 if [ "${1:-}" = "--postgres" ]; then
