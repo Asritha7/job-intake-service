@@ -33,7 +33,7 @@ public final class PooledPostgresIntegrationTest {
                 .timeout(Duration.ofSeconds(10)).GET().build()).statusCode();
     }
     private static void invalidSettings() {
-        for (String invalid : new String[] {"-1", "9", "100", "abc", " 2", "2 ", "2.0"}) {
+        for (String invalid : new String[] {"", " ", "-1", "9", "100", "abc", " 2", "2 ", "2.0"}) {
             boolean rejected = false;
             try { PooledPostgresJobStore.parseSize(invalid); }
             catch (IllegalArgumentException expected) { rejected = true; }
