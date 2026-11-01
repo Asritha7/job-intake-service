@@ -49,6 +49,8 @@ class BenchmarkSummaryTests(unittest.TestCase):
             self.assertEqual(report["results"]["4"]["range_accepts_per_second"], [41.0, 43.0])
             self.assertEqual(len(report["results"]["4"]["trials"]), 3)
             self.assertEqual(report["results"]["4"]["total_capacity_lock_wait_observations"], 12)
+            self.assertEqual(report["results"]["4"]["total_backend_observations"], 135)
+            self.assertIn("12 / 135", to_markdown(report))
             self.assertIn("No production throughput", to_markdown(report))
 
     def test_rejects_sampler_failure_and_missing_wait_data(self):
@@ -62,6 +64,14 @@ class BenchmarkSummaryTests(unittest.TestCase):
             wait_path.write_text(json.dumps({"source": "pg_stat_activity_sampling",
                                             "sampler_errors": 1, "sample_rounds": 5,
                                             "benchmark_exit_code": 0, "observations": {}}),
+                                 encoding="utf-8")
+            with self.assertRaises(ValueError):
+                summarize(folder)
+            wait_path.write_text(json.dumps({"source": "pg_stat_activity_sampling",
+                                            "sampler_errors": 0, "sample_rounds": 5,
+                                            "benchmark_exit_code": 0,
+                                            "backend_observations": 99,
+                                            "observations": {"capacity_lock_wait": 1}}),
                                  encoding="utf-8")
             with self.assertRaises(ValueError):
                 summarize(folder)
