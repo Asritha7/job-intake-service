@@ -41,7 +41,7 @@ class BenchmarkSummaryTests(unittest.TestCase):
             self.assertEqual(report["results"]["4"]["median_accepts_per_second"], 42.0)
             self.assertEqual(report["results"]["4"]["range_accepts_per_second"], [41.0, 43.0])
             self.assertEqual(len(report["results"]["4"]["trials"]), 3)
-            self.assertIn("not service capacity", to_markdown(report).replace("No production throughput", "not service capacity"))
+            self.assertIn("No production throughput", to_markdown(report))
 
     def test_rejects_missing_or_incorrect_workload(self):
         with tempfile.TemporaryDirectory() as temp:
