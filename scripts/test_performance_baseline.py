@@ -97,9 +97,12 @@ class PerformanceClientTests(unittest.TestCase):
             self.assertEqual(report["replay"]["requests"], 4)
             self.assertEqual(report["store_mode"], "not_verified_by_client")
             self.assertNotIn("benchmark-payload", path.read_text())
+            previous_jobs = len(FakeIntake.jobs)
             with contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(baseline.main(["--url", self.url, "--allow-writes",
                                                 "--new-jobs", "1", "--output", str(path)]), 2)
+            self.assertEqual(len(FakeIntake.jobs), previous_jobs,
+                             "Existing output must prevent submissions before HTTP writes")
 
     def test_replay_detects_changed_location(self):
         with FakeIntake.guard:
